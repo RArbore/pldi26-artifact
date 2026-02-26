@@ -1,0 +1,65 @@
+use core::str::FromStr;
+
+use crate::ast::*;
+
+grammar();
+
+pub Program: Vec<FuncAST> = {
+    Func* => <>,
+}
+
+Func: FuncAST = {
+    "fn" <name:Iden> "(" <params:List<Iden>> ")" <body:Stmt> => FuncAST { name, params, body },
+}
+
+Stmt: StmtAST = {
+    Block => <>,
+    <i:Iden> "=" <e:BinaryExpr> ";" => StmtAST::Assign(i, e),
+    "if" <c:BinaryExpr> <t:Block> <f:("else" <Block>)?> => StmtAST::IfElse(c, Box::new(t), Box::new(f.unwrap_or_else(|| StmtAST::Block(vec![])))),
+    "while" <c:BinaryExpr> <b:Block> => StmtAST::While(c, Box::new(b)),
+    "return" <e:BinaryExpr> ";" => StmtAST::Return(e),
+}
+
+Block: StmtAST = "{" <stmts:Stmt*> "}" => StmtAST::Block(stmts);
+
+BinaryExpr: ExprAST = {
+    #[precedence(level="0")]
+    UnaryExpr,
+    #[precedence(level="1")] #[assoc(side="left")]
+    <lhs:BinaryExpr> "*" <rhs:BinaryExpr> => ExprAST::Binary(BinaryOp::Mul, Box::new(lhs), Box::new(rhs)),
+    #[precedence(level="2")] #[assoc(side="left")]
+    <lhs:BinaryExpr> "+" <rhs:BinaryExpr> => ExprAST::Binary(BinaryOp::Add, Box::new(lhs), Box::new(rhs)),
+    <lhs:BinaryExpr> "-" <rhs:BinaryExpr> => ExprAST::Binary(BinaryOp::Sub, Box::new(lhs), Box::new(rhs)),
+    #[precedence(level="3")] #[assoc(side="left")]
+    <lhs:BinaryExpr> "==" <rhs:BinaryExpr> => ExprAST::Binary(BinaryOp::EE, Box::new(lhs), Box::new(rhs)),
+    <lhs:BinaryExpr> "!=" <rhs:BinaryExpr> => ExprAST::Binary(BinaryOp::NE, Box::new(lhs), Box::new(rhs)),
+    <lhs:BinaryExpr> "<" <rhs:BinaryExpr> => ExprAST::Binary(BinaryOp::LT, Box::new(lhs), Box::new(rhs)),
+    <lhs:BinaryExpr> "<=" <rhs:BinaryExpr> => ExprAST::Binary(BinaryOp::LE, Box::new(lhs), Box::new(rhs)),
+    <lhs:BinaryExpr> ">" <rhs:BinaryExpr> => ExprAST::Binary(BinaryOp::GT, Box::new(lhs), Box::new(rhs)),
+    <lhs:BinaryExpr> ">=" <rhs:BinaryExpr> => ExprAST::Binary(BinaryOp::GE, Box::new(lhs), Box::new(rhs)),
+}
+
+UnaryExpr: ExprAST = {
+    Atomic,
+    "!" <UnaryExpr> => ExprAST::Unary(UnaryOp::Not, Box::new(<>)),
+    "-" <UnaryExpr> => ExprAST::Unary(UnaryOp::Neg, Box::new(<>)),
+}
+
+Atomic: ExprAST = {
+    Num => ExprAST::Number(<>),
+    Iden => ExprAST::Variable(<>),
+    "(" <BinaryExpr> ")",
+}
+
+Iden: String = r"[a-zA-Z_][a-zA-Z0-9_]*" => <>.to_string();
+Num: i64 = r"-?[0-9]+" => i64::from_str(<>).unwrap();
+
+List<T>: Vec<T> = {
+    <mut v:(<T> ",")*> <e:T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
