@@ -3,3 +3,4 @@ target/
 *.csv
 *.tar
 *.tar.gz
+*.tex

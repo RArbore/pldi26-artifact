@@ -4,6 +4,8 @@ use rustc_hash::FxHashSet;
 
 use crate::ast::{BinaryOp, ExprAST, FuncAST, StmtAST, UnaryOp};
 
+const EXPR_JUICE: usize = 50;
+
 pub fn generate<R: Rng + ?Sized>(mut juice: usize, rng: &mut R) -> FuncAST {
     let mut in_scope = FxHashSet::default();
     let mut body = vec![];
@@ -11,9 +13,9 @@ pub fn generate<R: Rng + ?Sized>(mut juice: usize, rng: &mut R) -> FuncAST {
     while juice > 0 {
         body.push(generate_stmt(&mut juice, rng, &mut in_scope));
     }
-    juice += 10;
+    let mut expr_juice = EXPR_JUICE;
     body.push(StmtAST::Return(generate_expr(
-        &mut juice,
+        &mut expr_juice,
         rng,
         &mut in_scope,
     )));
@@ -35,29 +37,31 @@ fn generate_stmt<R: Rng + ?Sized>(
             let mut max_num = rng.random::<u32>() % 20;
             let mut block = vec![];
             while max_num > 0 && *juice > 0 {
+                *juice = juice.saturating_sub(1);
                 max_num -= 1;
                 block.push(generate_stmt(juice, rng, in_scope));
             }
-            *juice = juice.saturating_sub(1);
             StmtAST::Block(block)
         }
         10..50 => {
             let new = rng.random::<bool>();
+            *juice = juice.saturating_sub(1);
             if new || in_scope.is_empty() {
                 let var = format!("v{}", in_scope.len());
-                let expr = generate_expr(juice, rng, in_scope);
+                let mut expr_juice = EXPR_JUICE;
+                let expr = generate_expr(&mut expr_juice, rng, in_scope);
                 in_scope.insert(var.clone());
-                *juice = juice.saturating_sub(1);
                 StmtAST::Assign(var, expr)
             } else {
                 let var = in_scope.iter().choose(rng).unwrap().clone();
-                let expr = generate_expr(juice, rng, in_scope);
-                *juice = juice.saturating_sub(1);
+                let mut expr_juice = EXPR_JUICE;
+                let expr = generate_expr(&mut expr_juice, rng, in_scope);
                 StmtAST::Assign(var, expr)
             }
         }
         50..70 => {
-            let cond = generate_expr(juice, rng, in_scope);
+            let mut expr_juice = EXPR_JUICE;
+            let cond = generate_expr(&mut expr_juice, rng, in_scope);
             let mut then_scope = in_scope.clone();
             let then_stmt = if *juice > 0 {
                 generate_stmt(juice, rng, &mut then_scope)
@@ -75,7 +79,8 @@ fn generate_stmt<R: Rng + ?Sized>(
             StmtAST::IfElse(cond, Box::new(then_stmt), Box::new(else_stmt))
         }
         70..98 => {
-            let cond = generate_expr(juice, rng, in_scope);
+            let mut expr_juice = EXPR_JUICE;
+            let cond = generate_expr(&mut expr_juice, rng, in_scope);
             let mut inside_scope = in_scope.clone();
             let body = if *juice > 0 {
                 generate_stmt(juice, rng, &mut inside_scope)
@@ -85,7 +90,10 @@ fn generate_stmt<R: Rng + ?Sized>(
             *juice = juice.saturating_sub(1);
             StmtAST::While(cond, Box::new(body))
         }
-        _ => StmtAST::Return(generate_expr(juice, rng, in_scope)),
+        _ => {
+            let mut expr_juice = EXPR_JUICE;
+            StmtAST::Return(generate_expr(&mut expr_juice, rng, in_scope))
+        }
     }
 }
 
@@ -94,16 +102,15 @@ fn generate_expr<R: Rng + ?Sized>(
     rng: &mut R,
     in_scope: &FxHashSet<String>,
 ) -> ExprAST {
+    *juice = juice.saturating_sub(1);
     match rng.random::<u32>() % 4 {
         0 => {
             let num = rng.random::<i64>() % 100;
-            *juice = juice.saturating_sub(1);
             ExprAST::Number(num)
         }
         1 => {
             if !in_scope.is_empty() && *juice > 0 {
                 let var = in_scope.iter().choose(rng).unwrap().clone();
-                *juice = juice.saturating_sub(1);
                 ExprAST::Variable(var)
             } else {
                 ExprAST::Number(0)
@@ -113,7 +120,6 @@ fn generate_expr<R: Rng + ?Sized>(
             if *juice > 0 {
                 let op = rng.random::<UnaryOp>();
                 let input = generate_expr(juice, rng, in_scope);
-                *juice = juice.saturating_sub(1);
                 ExprAST::Unary(op, Box::new(input))
             } else {
                 ExprAST::Number(0)
@@ -125,7 +131,6 @@ fn generate_expr<R: Rng + ?Sized>(
                 let lhs = generate_expr(juice, rng, in_scope);
                 if *juice > 0 {
                     let rhs = generate_expr(juice, rng, in_scope);
-                    *juice = juice.saturating_sub(1);
                     ExprAST::Binary(op, Box::new(lhs), Box::new(rhs))
                 } else {
                     lhs
@@ -169,7 +174,7 @@ mod tests {
     use rand::rngs::Xoshiro128PlusPlus;
     use rayon::prelude::*;
 
-    use crate::analyses::{Analyses, standard_eclass_analysis};
+    use crate::analyses::{Analyses, dependents, standard_eclass_analysis};
     use crate::domains::Interval;
     use crate::rewrites::optimistic_equality_saturation;
     use crate::ssa::{BlockId, SSAGraph, dce, interpret, naive_ssa_translation};
@@ -177,10 +182,18 @@ mod tests {
     use super::*;
 
     fn check(ssa: &SSAGraph, analyses: &Analyses, block: BlockId, output: i64, iter: u64) {
-        assert!(!analyses.unreachable_blocks[&block]);
+        assert!(
+            !analyses.unreachable_blocks[&block],
+            "Check failed at iter {}",
+            iter
+        );
         let root = ssa.roots[&block];
         let interval = analyses.intervals[&root];
-        assert!(Interval::from_constant(output).leq(&interval), "Check failed at iter {}", iter);
+        assert!(
+            Interval::from_constant(output).leq(&interval),
+            "Check failed at iter {}",
+            iter
+        );
     }
 
     #[test]
@@ -191,8 +204,9 @@ mod tests {
             let (mut ssa, mut cfg) = naive_ssa_translation(&program);
             dce(&mut ssa, &cfg);
             let result = interpret(&ssa, &cfg, &[], 100);
-            let analyses1 = optimistic_equality_saturation(&mut ssa, &mut cfg, 2, 2);
-            let analyses2 = standard_eclass_analysis(&ssa, &cfg).0;
+            let analyses1 = optimistic_equality_saturation(&mut ssa, &mut cfg, 2, 2, 100000);
+            let dependents = dependents(&ssa, &cfg);
+            let analyses2 = standard_eclass_analysis(&ssa, &cfg, &dependents).0;
             if let Some((block, output)) = result {
                 check(&ssa, &analyses1, block, output, i);
                 check(&ssa, &analyses2, block, output, i);
@@ -214,8 +228,9 @@ mod tests {
             let (mut ssa, mut cfg) = naive_ssa_translation(&program);
             dce(&mut ssa, &cfg);
             let result = interpret(&ssa, &cfg, &[], 5000);
-            let analyses1 = optimistic_equality_saturation(&mut ssa, &mut cfg, 2, 2);
-            let analyses2 = standard_eclass_analysis(&ssa, &cfg).0;
+            let analyses1 = optimistic_equality_saturation(&mut ssa, &mut cfg, 2, 2, 100000);
+            let dependents = dependents(&ssa, &cfg);
+            let analyses2 = standard_eclass_analysis(&ssa, &cfg, &dependents).0;
             if let Some((block, output)) = result {
                 check(&ssa, &analyses1, block, output, i);
                 check(&ssa, &analyses2, block, output, i);
