@@ -1,4 +1,5 @@
 use core::cmp::max;
+use core::fmt::Display;
 use core::iter::zip;
 use std::fs::File;
 use std::io::Write;
@@ -6,8 +7,12 @@ use std::time::Instant;
 
 use rand::prelude::*;
 use rand::rngs::Xoshiro128PlusPlus;
+use tabled::{
+    Table, Tabled,
+    settings::{Alignment, Style, object::Rows},
+};
 
-use opt_eqsat::analyses::{outer_fixpoint, standard_eclass_analysis};
+use opt_eqsat::analyses::{dependents, outer_fixpoint, standard_eclass_analysis};
 use opt_eqsat::domains::Interval;
 use opt_eqsat::generate::generate;
 use opt_eqsat::rewrites::optimistic_equality_saturation;
@@ -15,6 +20,41 @@ use opt_eqsat::ssa::{dce, interpret, naive_ssa_translation};
 
 const NUM_PROGRAMS: usize = 100;
 const SAMPLE_SIZE: u128 = 25;
+
+#[derive(Debug)]
+enum Distribution {
+    Valid {
+        min: f64,
+        median: f64,
+        max: f64,
+    },
+    NA,
+}
+
+impl Display for Distribution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Distribution::Valid {
+                min,
+                median,
+                max,
+            } => write!(
+                f,
+                "{:.2}, {:.2}, {:.2}",
+                min, median, max
+            ),
+            Distribution::NA => write!(f, "N/A"),
+        }
+    }
+}
+
+#[derive(Debug, Tabled)]
+struct Row {
+    num_visit_items: Distribution,
+    standard_abstract_interpretation: Distribution,
+    standard_e_class_analysis: Distribution,
+    optimistic_e_class_analysis: Distribution,
+}
 
 fn main() {
     let mut programs = vec![];
@@ -48,42 +88,51 @@ fn main() {
     let mut max_micros_per_item1 = 0.0f64;
     let mut max_micros_per_item2 = 0.0f64;
     let mut max_micros_per_item3 = 0.0f64;
-    let mut num_items_after_rewriting = vec![];
+    let mut num_e_nodes_per_program = vec![];
     let mut total_micros = vec![];
     let mut num_outer_iters = vec![];
+    let mut table_distributions = vec![];
     for (idx, (mut ssa, mut cfg, block, output)) in programs.into_iter().enumerate() {
         let root = ssa.roots[&block];
+        let deps = dependents(&ssa, &cfg);
 
-        let (analyses, statistics1) = outer_fixpoint(&ssa, &cfg);
+        let (analyses, statistics1) = outer_fixpoint(&ssa, &cfg, &deps);
         assert!(!analyses.unreachable_blocks[&block]);
         assert!(Interval::from_constant(output).leq(&analyses.intervals[&root]));
 
+        let time4 = Instant::now();
+        for _ in 0..SAMPLE_SIZE {
+            standard_eclass_analysis(&ssa, &cfg, &deps);
+        }
+        let time4 = time4.elapsed();
+
         let time1 = Instant::now();
         for _ in 0..SAMPLE_SIZE {
-            outer_fixpoint(&ssa, &cfg);
+            outer_fixpoint(&ssa, &cfg, &deps);
         }
         let time1 = time1.elapsed();
 
-        optimistic_equality_saturation(&mut ssa, &mut cfg, 3, 1);
+        optimistic_equality_saturation(&mut ssa, &mut cfg, 4, 2, 5000);
         let root = ssa.roots[&block];
+        let deps = dependents(&ssa, &cfg);
 
-        let (analyses, statistics2) = standard_eclass_analysis(&ssa, &cfg);
+        let (analyses, statistics2) = standard_eclass_analysis(&ssa, &cfg, &deps);
         assert!(!analyses.unreachable_blocks[&block]);
         assert!(Interval::from_constant(output).leq(&analyses.intervals[&root]));
 
         let time2 = Instant::now();
         for _ in 0..SAMPLE_SIZE {
-            standard_eclass_analysis(&ssa, &cfg);
+            standard_eclass_analysis(&ssa, &cfg, &deps);
         }
         let time2 = time2.elapsed();
 
-        let (analyses, statistics3) = outer_fixpoint(&ssa, &cfg);
+        let (analyses, statistics3) = outer_fixpoint(&ssa, &cfg, &deps);
         assert!(!analyses.unreachable_blocks[&block]);
         assert!(Interval::from_constant(output).leq(&analyses.intervals[&root]));
 
         let time3 = Instant::now();
         for _ in 0..SAMPLE_SIZE {
-            outer_fixpoint(&ssa, &cfg);
+            outer_fixpoint(&ssa, &cfg, &deps);
         }
         let time3 = time3.elapsed();
 
@@ -115,6 +164,7 @@ fn main() {
         let avg_micros1 = time1.as_micros().div_ceil(SAMPLE_SIZE);
         let avg_micros2 = time2.as_micros().div_ceil(SAMPLE_SIZE);
         let avg_micros3 = time3.as_micros().div_ceil(SAMPLE_SIZE);
+        let avg_micros4 = time4.as_micros().div_ceil(SAMPLE_SIZE);
         let num_visit_items_before = num_nodes + num_blocks + num_edges;
         let num_visit_items_after = num_e_nodes + num_blocks + num_edges;
         let avg_visits_per_item1 = (avg_visits1 as f64) / (num_visit_items_before as f64);
@@ -149,9 +199,18 @@ fn main() {
         max_micros_per_item1 = max_micros_per_item1.max(avg_micros_per_outer_per_item1);
         max_micros_per_item2 = max_micros_per_item2.max(avg_micros_per_outer_per_item2);
         max_micros_per_item3 = max_micros_per_item3.max(avg_micros_per_outer_per_item3);
-        num_items_after_rewriting.push(num_visit_items_after);
+        num_e_nodes_per_program.push(num_e_nodes);
         total_micros.push(avg_micros3);
         num_outer_iters.push(num_outer_iters3);
+
+        table_distributions.push((
+            num_nodes as u128,
+            num_e_nodes as u128,
+            avg_micros1,
+            avg_micros2,
+            avg_micros3,
+            avg_micros4,
+        ));
 
         println!("Problem #{}:", idx + 1);
         println!(
@@ -240,11 +299,54 @@ fn main() {
         avg_avg_micros_per_item3, max_micros_per_item3
     );
 
+    let table = [
+        Row {
+            num_visit_items: dist(table_distributions.iter().map(|t| t.0 as f64)),
+            standard_abstract_interpretation: dist(table_distributions.iter().map(|t| t.2 as f64)),
+            standard_e_class_analysis: dist(table_distributions.iter().map(|t| t.5 as f64)),
+            optimistic_e_class_analysis: dist(table_distributions.iter().map(|t| t.2 as f64)),
+        },
+        Row {
+            num_visit_items: dist(table_distributions.iter().map(|t| t.1 as f64)),
+            standard_abstract_interpretation: Distribution::NA,
+            standard_e_class_analysis: dist(table_distributions.iter().map(|t| t.3 as f64)),
+            optimistic_e_class_analysis: dist(table_distributions.iter().map(|t| t.4 as f64)),
+        },
+    ];
+    let mut table = Table::new(table);
+    table
+        .with(Style::markdown())
+        .modify(Rows::first(), Alignment::center());
+    println!("\n{}", table);
+
     let mut file = File::create("plot_data.csv").unwrap();
     for (num_items, (micros, outer_iters)) in zip(
-        num_items_after_rewriting,
+        num_e_nodes_per_program,
         zip(total_micros, num_outer_iters),
     ) {
         writeln!(file, "{num_items} {micros} {outer_iters}").unwrap();
+    }
+}
+
+fn dist<I: Iterator<Item = f64> + Clone>(iter: I) -> Distribution {
+    let num_items = iter.clone().count() as f64;
+    let min = iter.clone().reduce(f64::min).unwrap();
+    let max = iter.clone().reduce(f64::max).unwrap();
+    let mean = iter.clone().sum::<f64>() / num_items;
+    let std_dev = (iter
+        .clone()
+        .map(|value| (value - mean) * (value - mean))
+        .sum::<f64>()
+        / num_items)
+        .sqrt();
+    let _minus_dev = mean - std_dev;
+    let _plus_dev = mean + std_dev;
+    let mut sorted = iter.collect::<Vec<_>>();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = sorted[sorted.len() / 2];
+    Distribution::Valid {
+        min,
+        median,
+        max,
     }
 }

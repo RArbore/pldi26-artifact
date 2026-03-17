@@ -169,7 +169,7 @@ mod tests {
     use rand::rngs::Xoshiro128PlusPlus;
     use rayon::prelude::*;
 
-    use crate::analyses::{Analyses, standard_eclass_analysis};
+    use crate::analyses::{Analyses, dependents, standard_eclass_analysis};
     use crate::domains::Interval;
     use crate::rewrites::optimistic_equality_saturation;
     use crate::ssa::{BlockId, SSAGraph, dce, interpret, naive_ssa_translation};
@@ -191,8 +191,9 @@ mod tests {
             let (mut ssa, mut cfg) = naive_ssa_translation(&program);
             dce(&mut ssa, &cfg);
             let result = interpret(&ssa, &cfg, &[], 100);
-            let analyses1 = optimistic_equality_saturation(&mut ssa, &mut cfg, 2, 2);
-            let analyses2 = standard_eclass_analysis(&ssa, &cfg).0;
+            let analyses1 = optimistic_equality_saturation(&mut ssa, &mut cfg, 2, 2, 100000);
+            let dependents = dependents(&ssa, &cfg);
+            let analyses2 = standard_eclass_analysis(&ssa, &cfg, &dependents).0;
             if let Some((block, output)) = result {
                 check(&ssa, &analyses1, block, output, i);
                 check(&ssa, &analyses2, block, output, i);
@@ -214,8 +215,9 @@ mod tests {
             let (mut ssa, mut cfg) = naive_ssa_translation(&program);
             dce(&mut ssa, &cfg);
             let result = interpret(&ssa, &cfg, &[], 5000);
-            let analyses1 = optimistic_equality_saturation(&mut ssa, &mut cfg, 2, 2);
-            let analyses2 = standard_eclass_analysis(&ssa, &cfg).0;
+            let analyses1 = optimistic_equality_saturation(&mut ssa, &mut cfg, 2, 2, 100000);
+            let dependents = dependents(&ssa, &cfg);
+            let analyses2 = standard_eclass_analysis(&ssa, &cfg, &dependents).0;
             if let Some((block, output)) = result {
                 check(&ssa, &analyses1, block, output, i);
                 check(&ssa, &analyses2, block, output, i);

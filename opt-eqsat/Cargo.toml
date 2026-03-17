@@ -15,6 +15,7 @@ rand = "*"
 rayon = "*"
 rustc-hash = "*"
 lalrpop-util = { version = "*", features = ["lexer", "unicode"] }
+tabled = "*"
 
 [build-dependencies]
 lalrpop = "*"

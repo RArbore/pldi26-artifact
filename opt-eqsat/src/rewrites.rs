@@ -1,24 +1,25 @@
+use core::cell::Cell;
 use core::mem::take;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::analyses::{Analyses, outer_fixpoint};
+use crate::analyses::{Analyses, dependents, outer_fixpoint};
 use crate::ast::BinaryOp;
 use crate::domains::{ClassId, Interval, UnionFind};
 use crate::ssa::{CFG, SSAGraph, SSAValue};
 
 type EClassMap = FxHashMap<ClassId, FxHashSet<SSAValue>>;
 
-pub fn saturate(ssa: &mut SSAGraph, cfg: &mut CFG, analyses: &Analyses, max: usize) -> bool {
+pub fn saturate(ssa: &mut SSAGraph, cfg: &mut CFG, analyses: &Analyses, iters: usize, max: usize) -> bool {
     let mut changed = false;
     let mut eclass_map: EClassMap = FxHashMap::default();
     for (value, id) in &ssa.values {
         eclass_map.entry(*id).or_default().insert(*value);
     }
 
-    for _ in 0..max {
+    for _ in 0..iters {
         let num_nodes = ssa.values.len();
         let num_classes = ssa.uf.num_classes();
-        let new_nodes = rewrites(ssa, &eclass_map, analyses);
+        let new_nodes = rewrites(ssa, &eclass_map, analyses, max);
 
         for (value, id) in new_nodes {
             if let Some(old) = ssa.values.insert(value, id) {
@@ -89,11 +90,13 @@ fn rewrites(
     ssa: &mut SSAGraph,
     eclass_map: &EClassMap,
     analyses: &Analyses,
+    max: usize,
 ) -> Vec<(SSAValue, ClassId)> {
     use BinaryOp::*;
     use SSAValue::*;
     let intervals = &analyses.intervals;
     let mut new_nodes = vec![];
+    let num_new_nodes = Cell::new(0);
 
     let mut add_value = |value, uf: &mut UnionFind| {
         if let Some(id) = ssa.values.get(&value) {
@@ -101,6 +104,7 @@ fn rewrites(
         } else {
             let id = uf.mk();
             new_nodes.push((value, id));
+            num_new_nodes.set(num_new_nodes.get() + 1);
             id
         }
     };
@@ -111,6 +115,9 @@ fn rewrites(
     };
 
     for (node, id) in &ssa.values {
+        if ssa.values.len() + num_new_nodes.get() >= max {
+            break;
+        }
         match node {
             Binary(Add, lhs, rhs) if lhs == rhs => {
                 let two = add_value(Constant(2), &mut ssa.uf);
@@ -167,6 +174,13 @@ fn rewrites(
                             );
                             ssa.uf.union(*id, distribute);
                         }
+                        Binary(Mul, sub_lhs, sub_rhs) => {
+                            let sub_rhs_times_rhs =
+                                add_value(Binary(Mul, *sub_rhs, *rhs), &mut ssa.uf);
+                            let reassoc =
+                                add_value(Binary(Mul, *sub_lhs, sub_rhs_times_rhs), &mut ssa.uf);
+                            ssa.uf.union(*id, reassoc);
+                        }
                         _ => {}
                     }
                 }
@@ -182,6 +196,13 @@ fn rewrites(
                                 &mut ssa.uf,
                             );
                             ssa.uf.union(*id, distribute);
+                        }
+                        Binary(Mul, sub_lhs, sub_rhs) => {
+                            let lhs_times_sub_lhs =
+                                add_value(Binary(Mul, *lhs, *sub_lhs), &mut ssa.uf);
+                            let reassoc =
+                                add_value(Binary(Mul, lhs_times_sub_lhs, *sub_rhs), &mut ssa.uf);
+                            ssa.uf.union(*id, reassoc);
                         }
                         _ => {}
                     }
@@ -228,13 +249,16 @@ pub fn optimistic_equality_saturation(
     cfg: &mut CFG,
     max_outer_iters: usize,
     max_rewrite_iters: usize,
+    max_e_nodes: usize,
 ) -> Analyses {
-    let mut analyses = outer_fixpoint(ssa, cfg).0;
+    let mut deps = dependents(&ssa, &cfg);
+    let mut analyses = outer_fixpoint(ssa, cfg, &deps).0;
     for _ in 0..max_outer_iters {
-        if !saturate(ssa, cfg, &analyses, max_rewrite_iters) {
+        if !saturate(ssa, cfg, &analyses, max_rewrite_iters, max_e_nodes) {
             break;
         }
-        analyses = outer_fixpoint(ssa, cfg).0;
+        deps = dependents(&ssa, &cfg);
+        analyses = outer_fixpoint(ssa, cfg, &deps).0;
     }
     analyses
 }
@@ -252,8 +276,9 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         let (mut ssa, mut cfg) = naive_ssa_translation(&parsed[0]);
         dce(&mut ssa, &cfg);
-        let analyses = outer_fixpoint(&ssa, &cfg).0;
-        saturate(&mut ssa, &mut cfg, &analyses, 3);
+        let dependents = dependents(&ssa, &cfg);
+        let analyses = outer_fixpoint(&ssa, &cfg, &dependents).0;
+        saturate(&mut ssa, &mut cfg, &analyses, 3, 100000);
         assert_eq!(ssa.roots.values().collect::<FxHashSet<_>>().len(), 1);
     }
 
@@ -267,7 +292,7 @@ mod tests {
         let (mut ssa, mut cfg) = naive_ssa_translation(&parsed[0]);
         dce(&mut ssa, &cfg);
         let result =
-            optimistic_equality_saturation(&mut ssa, &mut cfg, max_outer_iters, max_rewrite_iters);
+            optimistic_equality_saturation(&mut ssa, &mut cfg, max_outer_iters, max_rewrite_iters, 100000);
         assert_eq!(ssa.roots.values().collect::<FxHashSet<_>>().len(), 1);
         let root = *ssa.roots.iter().next().unwrap().1;
         (ssa, result, root)
