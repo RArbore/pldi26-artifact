@@ -8,13 +8,16 @@ use crate::domains::{ClassId, Interval, UnionFind};
 use crate::ssa::{BlockId, CFG, SSAGraph, SSAValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum VisitItem {
+pub enum VisitItem {
     Node(SSAValue, ClassId),
+    Class(ClassId),
     Block(BlockId),
     Edge(BlockId, BlockId),
 }
 
-fn dependents(ssa: &SSAGraph, cfg: &CFG) -> FxHashMap<VisitItem, Vec<VisitItem>> {
+pub type Dependents = FxHashMap<VisitItem, Vec<VisitItem>>;
+
+pub fn dependents(ssa: &SSAGraph, cfg: &CFG) -> Dependents {
     use VisitItem::*;
 
     let mut eclass_map: FxHashMap<ClassId, Vec<SSAValue>> = FxHashMap::default();
@@ -25,15 +28,15 @@ fn dependents(ssa: &SSAGraph, cfg: &CFG) -> FxHashMap<VisitItem, Vec<VisitItem>>
 
     for (value, id) in &ssa.values {
         let node = Node(*value, *id);
-        deps.entry(node).or_default();
+        let class = Class(*id);
+        deps.entry(node).or_default().push(class);
+        deps.entry(class).or_default();
         value.clone().map_non_back_edge_uses(
             |child_id| {
-                for child_value in &eclass_map[child_id] {
-                    let child_node = Node(*child_value, *child_id);
-                    deps.entry(child_node).or_default().push(node);
-                }
+                let child_class = Class(*child_id);
+                deps.entry(child_class).or_default().push(node);
             },
-            cfg,
+            &cfg,
         );
         match value {
             SSAValue::Constant(_) | SSAValue::Param(_) => {
@@ -57,11 +60,9 @@ fn dependents(ssa: &SSAGraph, cfg: &CFG) -> FxHashMap<VisitItem, Vec<VisitItem>>
             deps.entry(Block(*pred))
                 .or_default()
                 .push(Edge(*block, *pred));
-            for value in &eclass_map[cond] {
-                deps.entry(Node(*value, *cond))
-                    .or_default()
-                    .push(Edge(*block, *pred));
-            }
+            deps.entry(Class(*cond))
+                .or_default()
+                .push(Edge(*block, *pred));
             let edge_deps = deps.entry(Edge(*block, *pred)).or_default();
             if !back_edge {
                 edge_deps.push(Block(*block));
@@ -316,7 +317,7 @@ impl Analyses {
         worklist.push_back(Block(0));
         while let Some(visit) = worklist.pop_front() {
             inner_iter += 1;
-            match visit {
+            let changed = match visit {
                 Node(value, id) => {
                     let old_interval = self.intervals.get(&id).copied();
                     let node_interval = self.interval_transfer(value, id, cfg, old);
@@ -326,26 +327,25 @@ impl Analyses {
                     let old_number = self.value_number_uf.borrow_mut().find(id);
                     let number = self.gvn_transfer(value, id, cfg, old);
 
-                    if old_interval != Some(interval) || old_number != number {
-                        worklist.extend(&dependents[&visit]);
-                    }
+                    old_interval != Some(interval) || old_number != number
                 }
+                Class(_) => true,
                 Block(block) => {
                     let unreachable = self.block_unreachable_transfer(block, cfg, old);
                     let old_unreachable = self.unreachable_blocks.insert(block, unreachable);
 
-                    if old_unreachable != Some(unreachable) {
-                        worklist.extend(&dependents[&visit]);
-                    }
+                    old_unreachable != Some(unreachable)
                 }
                 Edge(block, pred) => {
                     let unreachable = self.edge_unreachable_transfer(block, pred, cfg, old);
                     let old_unreachable = self.unreachable_edges.insert((block, pred), unreachable);
 
-                    if old_unreachable != Some(unreachable) {
-                        worklist.extend(&dependents[&visit]);
-                    }
+                    old_unreachable != Some(unreachable)
                 }
+            };
+
+            if changed {
+                worklist.extend(&dependents[&visit]);
             }
         }
 
@@ -361,23 +361,26 @@ impl Analyses {
     }
 }
 
-pub fn outer_fixpoint(ssa: &SSAGraph, cfg: &CFG) -> (Analyses, AnalysisStatistics) {
+pub fn outer_fixpoint(
+    ssa: &SSAGraph,
+    cfg: &CFG,
+    dependents: &Dependents,
+) -> (Analyses, AnalysisStatistics) {
     let num_edges = cfg.iter().map(|(_, preds)| preds.len()).sum();
     let num_component_heads = cfg
         .iter()
         .filter(|(_, preds)| preds.iter().any(|(_, _, back_edge)| *back_edge))
         .count();
-    let dependents = dependents(ssa, cfg);
     let widening_points = widening_points(ssa, cfg);
     let mut statistics =
         AnalysisStatistics::new(ssa.values.len(), cfg.len(), num_edges, num_component_heads);
 
     let mut analyses = Analyses::top(ssa.uf.num_ids());
-    analyses.inner_fixpoint(cfg, &dependents, None, &mut statistics);
+    analyses.inner_fixpoint(cfg, dependents, None, &mut statistics);
 
     loop {
         let mut new_analyses = Analyses::top(ssa.uf.num_ids());
-        new_analyses.inner_fixpoint(cfg, &dependents, Some(&analyses), &mut statistics);
+        new_analyses.inner_fixpoint(cfg, dependents, Some(&analyses), &mut statistics);
         if analyses.changed(&new_analyses, &widening_points) {
             analyses = new_analyses;
         } else {
@@ -387,13 +390,16 @@ pub fn outer_fixpoint(ssa: &SSAGraph, cfg: &CFG) -> (Analyses, AnalysisStatistic
     return (analyses, statistics);
 }
 
-pub fn standard_eclass_analysis(ssa: &SSAGraph, cfg: &CFG) -> (Analyses, AnalysisStatistics) {
+pub fn standard_eclass_analysis(
+    ssa: &SSAGraph,
+    cfg: &CFG,
+    dependents: &Dependents,
+) -> (Analyses, AnalysisStatistics) {
     let num_edges = cfg.iter().map(|(_, preds)| preds.len()).sum();
     let num_component_heads = cfg
         .iter()
         .filter(|(_, preds)| preds.iter().any(|(_, _, back_edge)| *back_edge))
         .count();
-    let dependents = dependents(ssa, cfg);
     let mut statistics =
         AnalysisStatistics::new(ssa.values.len(), cfg.len(), num_edges, num_component_heads);
 
@@ -409,7 +415,7 @@ pub fn standard_eclass_analysis(ssa: &SSAGraph, cfg: &CFG) -> (Analyses, Analysi
         }
     }
 
-    analyses.inner_fixpoint(cfg, &dependents, Some(&top), &mut statistics);
+    analyses.inner_fixpoint(cfg, dependents, Some(&top), &mut statistics);
     (analyses, statistics)
 }
 
@@ -444,7 +450,8 @@ mod tests {
         dce(&mut ssa, &cfg);
         assert_eq!(ssa.roots.len(), 1);
         let root = *ssa.roots.iter().next().unwrap().1;
-        let analysis = outer_fixpoint(&ssa, &cfg).0;
+        let dependents = dependents(&ssa, &cfg);
+        let analysis = outer_fixpoint(&ssa, &cfg, &dependents).0;
         assert_eq!(
             analysis.intervals[&root],
             Interval::from_option_low_high(low, high)
@@ -460,7 +467,8 @@ mod tests {
         let mut roots = ssa.roots.iter();
         let root1 = *roots.next().unwrap().1;
         let root2 = *roots.next().unwrap().1;
-        let analysis = outer_fixpoint(&ssa, &cfg).0;
+        let dependents = dependents(&ssa, &cfg);
+        let analysis = outer_fixpoint(&ssa, &cfg, &dependents).0;
         assert!(analysis.value_number_uf.borrow_mut().query(root1, root2));
     }
 
@@ -469,7 +477,8 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         let (mut ssa, cfg) = naive_ssa_translation(&parsed[0]);
         dce(&mut ssa, &cfg);
-        let analysis = outer_fixpoint(&ssa, &cfg).0;
+        let dependents = dependents(&ssa, &cfg);
+        let analysis = outer_fixpoint(&ssa, &cfg, &dependents).0;
         for (block, root) in &ssa.roots {
             if !analysis.unreachable_blocks[block] {
                 assert_eq!(

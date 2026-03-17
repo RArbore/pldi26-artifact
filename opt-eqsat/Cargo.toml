@@ -11,10 +11,12 @@ path = "src/lib.rs"
 name = "experiment"
 
 [dependencies]
+colored = "*"
 rand = "*"
 rayon = "*"
 rustc-hash = "*"
 lalrpop-util = { version = "*", features = ["lexer", "unicode"] }
+tabled = "*"
 
 [build-dependencies]
 lalrpop = "*"
