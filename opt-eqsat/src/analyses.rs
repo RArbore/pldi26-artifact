@@ -129,6 +129,7 @@ pub struct Analyses {
     pub intervals: FxHashMap<ClassId, Interval>,
     pub value_number_uf: RefCell<UnionFind>,
 
+    intervals_at_widening_points: FxHashMap<SSAValue, Interval>,
     values: FxHashMap<GVNValue, ClassId>,
 }
 
@@ -140,6 +141,7 @@ impl Analyses {
             intervals: FxHashMap::default(),
             value_number_uf: RefCell::new(UnionFind::from_num_ids(num_class_ids)),
 
+            intervals_at_widening_points: FxHashMap::default(),
             values: FxHashMap::default(),
         }
     }
@@ -220,13 +222,7 @@ impl Analyses {
         cond.is_zero()
     }
 
-    fn interval_transfer(
-        &self,
-        value: SSAValue,
-        id: ClassId,
-        cfg: &CFG,
-        old: Option<&Self>,
-    ) -> Interval {
+    fn interval_transfer(&mut self, value: SSAValue, cfg: &CFG, old: Option<&Self>) -> Interval {
         use SSAValue::*;
         match value {
             Constant(cons) => Interval::from_constant(cons),
@@ -245,11 +241,15 @@ impl Analyses {
                     (true, false) => rhs,
                     (false, false) => lhs.join(&rhs),
                 };
-                if (preds[0].2 || preds[1].2)
-                    && let Some(old) = old
-                {
-                    let old = old.intervals[&id];
-                    old.widen(&interval)
+                if preds[0].2 || preds[1].2 {
+                    self.intervals_at_widening_points.insert(value, interval);
+                    if let Some(old) =
+                        old.and_then(|old| old.intervals_at_widening_points.get(&value))
+                    {
+                        old.widen(&interval)
+                    } else {
+                        interval
+                    }
                 } else {
                     interval
                 }
@@ -320,7 +320,7 @@ impl Analyses {
             let changed = match visit {
                 Node(value, id) => {
                     let old_interval = self.intervals.get(&id).copied();
-                    let node_interval = self.interval_transfer(value, id, cfg, old);
+                    let node_interval = self.interval_transfer(value, cfg, old);
                     let interval = node_interval.meet(&old_interval.unwrap_or(Interval::top()));
                     self.intervals.insert(id, interval);
 

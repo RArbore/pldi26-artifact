@@ -79,13 +79,14 @@ Run the following command from the directory you created in step 1:
 This will run the empirical evaluation of the software artifact. Depending on hardware, this may take a few seconds to a few minutes. If everything is working correctly, you should see "All done!" appear in your shell. You should also see a line "Important info for paper:" - all the data included in the paper is displayed below this line. Verify the following numbers, from section 7.3 of the paper, were printed:
 
 ```
+Important info for paper:
 Max number of component heads (max number of loops): 184
-Max number of component head phis: 2919
-Max number of e-nodes: 14138
-Max number of outer iterations for standard program analysis:   4 (% where it's 2: 90%)
-Max number of outer iterations for optimistic e-class analysis: 4 (% where it's 2: 91%)
+Max number of component head phis: 3068
+Max number of e-nodes: 11375
+Max number of outer iterations for standard program analysis:   6 (% where it's at most 3: 99%)
+Max number of outer iterations for optimistic e-class analysis: 6 (% where it's at most 3: 99%)
 ...
-Average average visits per item per outer iteration for optimistic e-class analysis: 3.305997755346817 (max: 4.576758605943981)
+Average average visits per item per outer iteration for optimistic e-class analysis: 3.1864516691694984 (max: 4.380641551659829)
 ...
 ```
 

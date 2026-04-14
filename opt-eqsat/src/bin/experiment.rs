@@ -98,8 +98,8 @@ fn main() {
     let mut max_component_head_phis = 0;
     let mut max_outer_iters1 = 0;
     let mut max_outer_iters3 = 0;
-    let mut num_outer_iters_is_two1 = 0;
-    let mut num_outer_iters_is_two3 = 0;
+    let mut num_outer_iters_is_at_most_three1 = 0;
+    let mut num_outer_iters_is_at_most_three3 = 0;
     let mut avg_avg_visits_per_item1 = 0.0f64;
     let mut avg_avg_visits_per_item2 = 0.0f64;
     let mut avg_avg_visits_per_item3 = 0.0f64;
@@ -212,11 +212,11 @@ fn main() {
         max_component_head_phis = max(max_component_head_phis, num_component_head_phis);
         max_outer_iters1 = max(max_outer_iters1, num_outer_iters1);
         max_outer_iters3 = max(max_outer_iters3, num_outer_iters3);
-        if num_outer_iters1 == 2 {
-            num_outer_iters_is_two1 += 1;
+        if num_outer_iters1 <= 3 {
+            num_outer_iters_is_at_most_three1 += 1;
         }
-        if num_outer_iters3 == 2 {
-            num_outer_iters_is_two3 += 1;
+        if num_outer_iters3 <= 3 {
+            num_outer_iters_is_at_most_three3 += 1;
         }
         avg_avg_visits_per_item1 += avg_visits_per_item1;
         avg_avg_visits_per_item2 += avg_visits_per_item2;
@@ -317,16 +317,16 @@ fn main() {
         format!("{}", num_e_nodes_per_program.iter().max().unwrap()).bold()
     );
     println!(
-        "Max number of outer iterations for standard program analysis:   {} (% where it's 2: {}%)",
+        "Max number of outer iterations for standard program analysis:   {} (% where it's at most 3: {}%)",
         max_outer_iters1,
-        num_outer_iters_is_two1 * 100 / NUM_PROGRAMS
+        num_outer_iters_is_at_most_three1 * 100 / NUM_PROGRAMS
     );
     println!(
         "Max number of outer iterations for optimistic e-class analysis: {}",
         format!(
-            "{} (% where it's 2: {}%)",
+            "{} (% where it's at most 3: {}%)",
             max_outer_iters3,
-            num_outer_iters_is_two3 * 100 / NUM_PROGRAMS
+            num_outer_iters_is_at_most_three3 * 100 / NUM_PROGRAMS
         )
         .bold()
     );
@@ -492,7 +492,7 @@ fn main() {
         \makecell{{$n$ for Optimistic \\ E-Class Analysis}} & {} & {} & {} & {} \\
          \hline
     \end{{tabular}}
-    \caption{{Wall clock time (in \textmu s) for standard abstract interpretation, standard e-class analysis, and optimistic e-class analysis run on 100 generated programs, along with the amount of visit items and the number of greatest fixpoint computations ($n$). The relative execution time for optimistic e-class analysis is shown in parentheses compared to standard abstract interpretation and standard e-class analysis (smaller is better). The number of visit items after rewriting is shown relative to before rewriting. Standard abstract interpretation is run before rewriting while both e-class analyses are run after rewriting.}}
+    \caption{{Wall clock time (in \textmu s) for standard abstract interpretation, standard e-class analysis, and optimistic e-class analysis run on 100 programs, along with the \# of visit items and the \# of fixpoint computations ($n$). The relative execution time for optimistic e-class analysis is shown in parentheses compared to standard abstract interpretation and standard e-class analysis. We compute the arithmetic mean of absolute measurements and the geometric mean of relative measurements. The \# of visit items after rewriting is shown relative to before. Standard abstract interpretation is run before rewriting while both e-class analyses are run after.}}
     \label{{tab:evaluation}}
 \end{{table}}
 "#,
